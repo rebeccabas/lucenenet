@@ -38,7 +38,7 @@
 
  .PARAMETER TestFrameworks
     A string array of Dotnet target framework monikers to run the tests on. The default is
-    @('net9.0','net8.0','net6.0','net472','net48').
+    @('net10.0','net8.0','net472','net48').
 
  .PARAMETER OperatingSystems
     A string array of Github Actions operating system monikers to run the tests on.
@@ -51,24 +51,21 @@
  .PARAMETER Configurations
     A string array of build configurations to run the tests on. The default is @('Release').
 
- .PARAMETER DotNet9SDKVersion
-    The SDK version of .NET 9.x to install on the build agent to be used for building and
-    testing. This SDK is always installed on the build agent. The default is 9.0.x.
+ .PARAMETER DotNet10SDKVersion
+    The SDK version of .NET 10.x to install on the build agent to be used for building and
+    testing. This SDK is always installed on the build agent. The default is 10.0.x.
 
  .PARAMETER DotNet8SDKVersion
     The SDK version of .NET 8.x to install on the build agent to be used for building and
     testing. This SDK is always installed on the build agent. The default is 8.0.x.
 
- .PARAMETER DotNet6SDKVersion
-    The SDK version of .NET 6.x to install on the build agent to be used for building and
-    testing. This SDK is always installed on the build agent. The default is 6.0.x.
 #>
 param(
     [string]$OutputDirectory =  $PSScriptRoot,
 
     [string]$RepoRoot = (Split-Path (Split-Path $PSScriptRoot)),
 
-    [string[]]$TestFrameworks = @('net9.0','net8.0','net6.0','net472','net48'), # targets under test: net8.0, net8.0, netstandard2.1, netstandard2.0, net462
+    [string[]]$TestFrameworks = @('net10.0', 'net8.0', 'net472', 'net48'), # targets under test: net10.0, net8.0, netstandard2.0, net462
 
     [string[]]$OperatingSystems = @('windows-latest', 'ubuntu-latest'),
 
@@ -76,11 +73,9 @@ param(
 
     [string[]]$Configurations = @('Release'),
 
-    [string]$DotNet9SDKVersion = '9.0.x',
+    [string]$DotNet10SDKVersion = '10.0.x',
 
-    [string]$DotNet8SDKVersion = '8.0.x',
-
-    [string]$DotNet6SDKVersion = '6.0.x'
+    [string]$DotNet8SDKVersion = '8.0.x'
 )
 
 
@@ -146,6 +141,15 @@ function Get-ProjectPathDirectories([string]$ProjectPath, [string]$RelativeRoot,
     }
 }
 
+function Get-SupportedTargetFrameworksString([Parameter(Mandatory)][string] $ProjectPath) {
+    # NOTE: This will not appear when run directly in the console with minimal verbosity. MSBuild only produces the output when using a pipe, which is what we are doing here.
+    $output = dotnet build "$ProjectPath" --verbosity minimal --nologo --no-restore /t:PrintTargetFrameworks /p:TestProjectsOnly=true /p:TestFrameworks=true 2>&1 | Out-String
+    if ($output -match 'SupportedTargetFrameworks=([^\s]+)') {
+        return $matches[1]
+    }
+    throw "Failed to determine supported target frameworks for project: $ProjectPath"
+}
+
 function Ensure-Directory-Exists([string] $path) {
     if (!(Test-Path $path)) {
         New-Item $path -ItemType Directory
@@ -160,9 +164,8 @@ function Write-TestWorkflow(
     [string[]]$TestFrameworks = @('net6.0', 'net48'),
     [string[]]$TestPlatforms = @('x64'),
     [string[]]$OperatingSystems = @('windows-latest', 'ubuntu-latest', 'macos-latest'),
-    [string]$DotNet9SDKVersion = $DotNet9SDKVersion,
-    [string]$DotNet8SDKVersion = $DotNet8SDKVersion,
-    [string]$DotNet6SDKVersion = $DotNet6SDKVersion) {
+    [string]$DotNet10SDKVersion = $DotNet10SDKVersion,
+    [string]$DotNet8SDKVersion = $DotNet8SDKVersion) {
 
     $dependencies = New-Object System.Collections.Generic.HashSet[string]
     Get-ProjectDependencies $ProjectPath $RelativeRoot $dependencies
@@ -278,26 +281,21 @@ jobs:
 
     steps:
       - name: Checkout Source Code
-        uses: actions/checkout@v5
-
-      - name: Setup .NET 6 SDK
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '$DotNet6SDKVersion'
-        if: `${{ startswith(matrix.framework, 'net6.') }}
+        uses: actions/checkout@v6
 
       - name: Setup .NET 8 SDK
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '$DotNet8SDKVersion'
+        if: `${{ startswith(matrix.framework, 'net8.') }}
 
-      - name: Setup .NET 9 SDK
+      - name: Setup .NET 10 SDK
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '$DotNet9SDKVersion'
+          dotnet-version: '$DotNet10SDKVersion'
 
       - name: Cache NuGet Packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           # '**/*.*proj' includes .csproj, .vbproj, .fsproj, msbuildproj, etc.
           # '**/*.props' includes Directory.Packages.props, Directory.Build.props and Dependencies.props
@@ -329,12 +327,14 @@ jobs:
     if ($isCLI) {
         # Special case: Generate lucene-cli.nupkg for installation test so the test runner doesn't have to do it
         $fileText += "
-      - run: dotnet pack `${{env.project_under_test_path}} --configuration `${{matrix.configuration}} --no-restore /p:TestFrameworks=`${{ env.BUILD_FOR_ALL_TEST_TARGET_FRAMEWORKS }} /p:PortableDebugTypeOnly=true"
+      - run: dotnet pack `"`${{env.project_under_test_path}}`" --configuration `"`${{matrix.configuration}}`" --no-restore -p:TestFrameworks=`${{ env.BUILD_FOR_ALL_TEST_TARGET_FRAMEWORKS }} -p:PortableDebugTypeOnly=true
+        shell: bash"
     }
 
     $fileText += "
-      - run: dotnet build `${{env.project_path}} --configuration `${{matrix.configuration}} --framework `${{matrix.framework}} --no-restore /p:TestFrameworks=`${{ env.BUILD_FOR_ALL_TEST_TARGET_FRAMEWORKS }}
-      - run: dotnet test `${{env.project_path}} --configuration `${{matrix.configuration}} --framework `${{matrix.framework}} --no-build --no-restore --blame-hang --blame-hang-dump-type mini --blame-hang-timeout 20minutes --logger:`"console;verbosity=normal`" --logger:`"trx;LogFileName=`${{env.trx_file_name}}`" --logger:`"liquid.md;LogFileName=`${{env.md_file_name}};Title=`${{env.title}};`" --results-directory:`"`${{github.workspace}}/`${{env.test_results_artifact_name}}/`${{env.project_name}}`" -- RunConfiguration.TargetPlatform=`${{matrix.platform}} NUnit.DisplayName=FullName TestRunParameters.Parameter\(name=\`"tests:slow\`",\ value=\`"\`${{env.run_slow_tests}}\`"\)
+      - run: dotnet build `"`${{env.project_path}}`" --configuration `"`${{matrix.configuration}}`" --framework `"`${{matrix.framework}}`" --no-restore -p:TestFrameworks=`${{ env.BUILD_FOR_ALL_TEST_TARGET_FRAMEWORKS }}
+        shell: bash
+      - run: dotnet test `"`${{env.project_path}}`" --configuration `"`${{matrix.configuration}}`" --framework `"`${{matrix.framework}}`" --no-build --no-restore --blame-hang --blame-hang-dump-type mini --blame-hang-timeout 20minutes --logger:`"console;verbosity=normal`" --logger:`"trx;LogFileName=`${{env.trx_file_name}}`" --logger:`"liquid.md;LogFileName=`${{env.md_file_name}};Title=`${{env.title}};`" --results-directory:`"`${{github.workspace}}/`${{env.test_results_artifact_name}}/`${{env.project_name}}`" -- RunConfiguration.TargetPlatform=`${{matrix.platform}} NUnit.DisplayName=FullName TestRunParameters.Parameter\(name=\`"tests:slow\`",\ value=\`"\`${{env.run_slow_tests}}\`"\)
         shell: bash
       # upload reports as build artifacts
       - name: Upload a Build Artifact
@@ -362,7 +362,10 @@ jobs:
     Ensure-Directory-Exists $OutputDirectory
 
     Write-Host "Generating workflow file: $FilePath"
-    Out-File -filePath $FilePath -encoding UTF8 -inputObject $fileText
+
+    # Ensure the file does not get generated with a BOM
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($FilePath, $fileText, $utf8NoBom)
 
     #Write-Host $fileText
 }
@@ -375,15 +378,15 @@ try {
     Pop-Location
 }
 
-#Write-TestWorkflow -OutputDirectory $OutputDirectory -ProjectPath $projectPath -RelativeRoot $repoRoot -TestFrameworks @('net6.0') -OperatingSystems $OperatingSystems -TestPlatforms $TestPlatforms -Configurations $Configurations -DotNet8SDKVersion $DotNet8SDKVersion -DotNet6SDKVersion $DotNet6SDKVersion
+#Write-TestWorkflow -OutputDirectory $OutputDirectory -ProjectPath $projectPath -RelativeRoot $repoRoot -TestFrameworks @('net6.0') -OperatingSystems $OperatingSystems -TestPlatforms $TestPlatforms -Configurations $Configurations -DotNet8SDKVersion $DotNet8SDKVersion
 
 #Write-Host $TestProjects
 
 foreach ($testProject in $TestProjects) {
     $projectName = [System.IO.Path]::GetFileNameWithoutExtension($testProject)
 
-     # Call the target to get the configured test frameworks for this project. We only read the first line because MSBuild adds extra output.
-    $frameworksString = $(dotnet build "$testProject" --verbosity minimal --nologo --no-restore /t:PrintTargetFrameworks /p:TestProjectsOnly=true /p:TestFrameworks=true)[0].Trim()
+     # Call the target to get the configured test frameworks for this project.
+    $frameworksString = Get-SupportedTargetFrameworksString $testProject
 
     if ($frameworksString -eq 'none') {
         Write-Host "WARNING: Skipping project '$projectName' because it is not marked with `<IsTestProject`>true`<`/IsTestProject`> and/or it contains no test frameworks for the current environment." -ForegroundColor Yellow
@@ -402,5 +405,5 @@ foreach ($testProject in $TestProjects) {
     Write-Host "Frameworks To Test for ${projectName}: $($frameworks -join ';')" -ForegroundColor Cyan
 
     #Write-Host "Project: $projectName"
-    Write-TestWorkflow -OutputDirectory $OutputDirectory -ProjectPath $testProject -RelativeRoot $RepoRoot -TestFrameworks $frameworks -OperatingSystems $OperatingSystems -TestPlatforms $TestPlatforms -Configurations $Configurations -DotNet8SDKVersion $DotNet8SDKVersion -DotNet6SDKVersion $DotNet6SDKVersion
+    Write-TestWorkflow -OutputDirectory $OutputDirectory -ProjectPath $testProject -RelativeRoot $RepoRoot -TestFrameworks $frameworks -OperatingSystems $OperatingSystems -TestPlatforms $TestPlatforms -Configurations $Configurations -DotNet8SDKVersion $DotNet8SDKVersion
 }
